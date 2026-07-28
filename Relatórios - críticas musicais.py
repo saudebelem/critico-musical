@@ -1381,7 +1381,24 @@ def fetch_and_parse_url(url):
                 apple_data['site_name'] = "Spotify"
                 apple_data['domain'] = parsed['domain']
                 return apple_data
-                
+
+    if 'youtube.com' in url or 'youtu.be' in url:
+        try:
+            oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(url, safe='')}&format=json"
+            oembed_req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(oembed_req, timeout=8) as oembed_resp:
+                oembed_data = json.loads(oembed_resp.read().decode('utf-8'))
+                channel_name = oembed_data.get('author_name', '').strip()
+                video_title  = oembed_data.get('title', '').strip()
+                if channel_name:
+                    parsed['podcast_name'] = channel_name
+                    parsed['site_name']    = "YouTube"
+                if video_title:
+                    parsed['title'] = format_sentence_case(video_title)
+        except Exception:
+            pass
+
+
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=12) as response:
@@ -1511,30 +1528,34 @@ def build_report_filename(data):
     title_raw = data.get('title', '')
     
     if not podcast_name or not theme:
-        m_abfp = re.search(r'#(\d+)\s*[\-\|]\s*(.*)', title_raw)
-        if m_abfp or 'abfp' in title_raw.lower():
-            podcast_name = "Podcast ABFP"
-            if m_abfp:
-                ep_num = m_abfp.group(1)
-                theme = m_abfp.group(2).strip()
-            else:
-                m_num = re.search(r'#?(\d+)', title_raw)
+        if podcast_name and not theme:
+            # Nome da fonte já definido (ex: canal YouTube); usa o título como tema
+            theme = title_raw
+        else:
+            m_abfp = re.search(r'#(\d+)\s*[\-\|]\s*(.*)', title_raw)
+            if m_abfp or 'abfp' in title_raw.lower():
+                podcast_name = "Podcast ABFP"
+                if m_abfp:
+                    ep_num = m_abfp.group(1)
+                    theme = m_abfp.group(2).strip()
+                else:
+                    m_num = re.search(r'#?(\d+)', title_raw)
+                    if m_num:
+                        ep_num = m_num.group(1)
+                    theme = re.sub(r'Podcast ABFP|#\d+|-', '', title_raw, flags=re.IGNORECASE).strip()
+                    
+            elif 'sala de música' in title_raw.lower() or 'bôscoli' in title_raw.lower() or 'cbn' in title_raw.lower():
+                podcast_name = "Sala de Música CBN"
+                theme = re.sub(r'Sala de Música|CBN|-', '', title_raw, flags=re.IGNORECASE).strip()
+            elif 'vfsm' in title_raw.lower():
+                podcast_name = "Podcast VFSM"
+                m_num = re.search(r'(\d+)', title_raw)
                 if m_num:
                     ep_num = m_num.group(1)
-                theme = re.sub(r'Podcast ABFP|#\d+|-', '', title_raw, flags=re.IGNORECASE).strip()
-                
-        elif 'sala de música' in title_raw.lower() or 'bôscoli' in title_raw.lower() or 'cbn' in title_raw.lower():
-            podcast_name = "Sala de Música CBN"
-            theme = re.sub(r'Sala de Música|CBN|-', '', title_raw, flags=re.IGNORECASE).strip()
-        elif 'vfsm' in title_raw.lower():
-            podcast_name = "Podcast VFSM"
-            m_num = re.search(r'(\d+)', title_raw)
-            if m_num:
-                ep_num = m_num.group(1)
-            theme = re.sub(r'Vfsm|\d+|-', '', title_raw, flags=re.IGNORECASE).strip()
-        else:
-            podcast_name = data.get('site_name', 'Podcast Cultural')
-            theme = title_raw
+                theme = re.sub(r'Vfsm|\d+|-', '', title_raw, flags=re.IGNORECASE).strip()
+            else:
+                podcast_name = data.get('site_name', 'Podcast Cultural')
+                theme = title_raw
 
     theme = re.sub(r'[\\/*?:"<>|]', '', theme).replace("'", "").strip()
     
