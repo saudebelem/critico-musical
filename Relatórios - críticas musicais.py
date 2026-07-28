@@ -2643,15 +2643,14 @@ def generate_transcription_report(audio_path, data, output_dir, progress_callbac
                     time.sleep(delay)
                     current_pct = min(current_pct + step_size, 93)
 
-                # Após atingir 93%, continua oscilando 93→99% até o Whisper terminar
-                # (evita que o t.join() bloqueante trave a animação visualmente)
+                # Após atingir 93%, progride lentamente até 99% e aguarda (evita sensação de travamento ou regressão)
+                slow_pct = 93
                 while not stop_anim.is_set():
-                    for slow_pct in list(range(93, 100)) + list(range(99, 92, -1)):
-                        if stop_anim.is_set():
-                            break
-                        if progress_callback:
-                            progress_callback(slow_pct, "")
-                        time.sleep(2.0)
+                    if progress_callback:
+                        progress_callback(slow_pct, "")
+                    time.sleep(2.0)
+                    if slow_pct < 99:
+                        slow_pct += 1
 
                 t.join()  # garante que a thread terminou
 
