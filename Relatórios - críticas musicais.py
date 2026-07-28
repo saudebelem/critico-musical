@@ -2497,6 +2497,21 @@ def ensure_media_downloaded(data, progress_callback=None):
         if progress_callback:
             progress_callback(50, "Executando busca no motor de download (yt-dlp)...")
             
+        original_url = data.get('url', '')
+        if original_url and ('youtube' in original_url or 'youtu.be' in original_url):
+            cmd = [
+                "yt-dlp",
+                "--extract-audio",
+                "--audio-format", "mp3",
+                "-o", audio_dest_path,
+                original_url
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if os.path.exists(audio_dest_path) and os.path.getsize(audio_dest_path) > 0:
+                if progress_callback:
+                    progress_callback(100, f"Mídia salva via yt-dlp URL direta ({os.path.basename(audio_dest_path)})")
+                return audio_dest_path
+                
         for yt_term in search_terms:
             search_query_yt = normalize_text_ascii(yt_term)
             if not search_query_yt or len(search_query_yt) < 3:
