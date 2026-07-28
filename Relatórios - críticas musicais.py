@@ -1521,58 +1521,74 @@ def sanitize_filename(name):
     return clean[:120]
 
 def build_report_filename(data):
-    podcast_name = data.get('podcast_name', '')
-    ep_num = str(data.get('ep_number', '')).strip()
-    theme = data.get('theme', '')
-    
-    title_raw = data.get('title', '')
-    
-    if not podcast_name or not theme:
-        if podcast_name and not theme:
-            # Nome da fonte já definido (ex: canal YouTube); usa o título como tema
-            theme = title_raw
-        else:
-            m_abfp = re.search(r'#(\d+)\s*[\-\|]\s*(.*)', title_raw)
-            if m_abfp or 'abfp' in title_raw.lower():
-                podcast_name = "Podcast ABFP"
-                if m_abfp:
-                    ep_num = m_abfp.group(1)
-                    theme = m_abfp.group(2).strip()
-                else:
-                    m_num = re.search(r'#?(\d+)', title_raw)
-                    if m_num:
-                        ep_num = m_num.group(1)
-                    theme = re.sub(r'Podcast ABFP|#\d+|-', '', title_raw, flags=re.IGNORECASE).strip()
-                    
-            elif 'sala de música' in title_raw.lower() or 'bôscoli' in title_raw.lower() or 'cbn' in title_raw.lower():
-                podcast_name = "Sala de Música CBN"
-                theme = re.sub(r'Sala de Música|CBN|-', '', title_raw, flags=re.IGNORECASE).strip()
-            elif 'vfsm' in title_raw.lower():
-                podcast_name = "Podcast VFSM"
-                m_num = re.search(r'(\d+)', title_raw)
-                if m_num:
-                    ep_num = m_num.group(1)
-                theme = re.sub(r'Vfsm|\d+|-', '', title_raw, flags=re.IGNORECASE).strip()
-            else:
-                podcast_name = data.get('site_name', 'Podcast Cultural')
-                theme = title_raw
+    """
+    Constrói o nome do arquivo no padrão universal:
+        [Nome do Perfil] - [Episódio NNN (se houver)] - [Tema da Fonte]
+    Válido para qualquer tipo de fonte: áudio, vídeo, texto, artigo, blog, etc.
+    """
+    podcast_name = (data.get('podcast_name') or '').strip()
+    ep_num       = str(data.get('ep_number') or '').strip()
+    theme        = (data.get('theme') or '').strip()
+    title_raw    = (data.get('title') or '').strip()
+    site_name    = (data.get('site_name') or '').strip()
 
-    theme = re.sub(r'[\\/*?:"<>|]', '', theme).replace("'", "").strip()
-    
+    # 1. Nome do Perfil
+    if not podcast_name:
+        tl = title_raw.lower()
+        if 'abfp' in tl or re.search(r'#\d+\s*[\-\|]', title_raw):
+            podcast_name = 'Podcast ABFP'
+        elif 'sala de música' in tl or 'bôscoli' in tl or 'cbn' in tl:
+            podcast_name = 'Sala de Música CBN'
+        elif 'vfsm' in tl or 'vamos falar sobre música' in tl:
+            podcast_name = 'Podcast VFSM'
+        elif 'discord and rhyme' in tl:
+            podcast_name = 'Discord and Rhyme An Album Podcast'
+        elif 'o som do vinil' in tl:
+            podcast_name = 'O Som do Vinil Podcast'
+        elif 'discoteca básica' in tl:
+            podcast_name = 'Discoteca Básica Podcast'
+        elif site_name and site_name.lower() not in ('web', 'youtube', 'spotify', ''):
+            podcast_name = site_name
+        else:
+            podcast_name = site_name or 'Fonte Cultural'
+
+    # 2. Número de Episódio (opcional)
+    if not ep_num:
+        m_ep = re.search(r'(?:#|Episódio\s+|ep\.?\s*)0*(\d{1,4})\b', title_raw)
+        if m_ep:
+            ep_num = m_ep.group(1)
+
+    # 3. Tema
+    if not theme:
+        theme = title_raw
+        if podcast_name and theme.lower().startswith(podcast_name.lower()):
+            theme = theme[len(podcast_name):].lstrip(' -–|').strip()
+        theme = re.sub(r'^(?:#|[Ee]pisódio\s+|ep\.?\s*)\d+\s*[\-\|\s]*', '', theme).strip()
+        theme = re.sub(
+            r'\s*[\-\|]\s*(?:Podcast on Spotify|Spotify|YouTube|Anchor|RSS)$',
+            '', theme, flags=re.IGNORECASE
+        ).strip()
+
+    # 4. Montar nome final
+    theme = re.sub(r'[\\/*?:"<>|]', '', theme).replace("'", '').strip()
+
     parts = []
     if podcast_name:
         parts.append(podcast_name)
     if ep_num:
         try:
-            padded_ep = f"{int(ep_num):03d}"
+            padded_ep = f'{int(ep_num):03d}'
         except Exception:
             padded_ep = ep_num
-        parts.append(f"Episódio {padded_ep}")
+        parts.append(f'Episódio {padded_ep}')
     if theme:
         parts.append(theme)
-        
-    raw_file = " - ".join(parts) + ".docx"
+    elif not parts:
+        parts.append('Relatório Cultural')
+
+    raw_file = ' - '.join(parts) + '.docx'
     return sanitize_filename(raw_file)
+
 
 def query_wikipedia_background(search_term):
     try:
@@ -2399,7 +2415,7 @@ def ensure_media_downloaded(data, progress_callback=None):
         theme = data.get('theme', '')
         title = data.get('title', '')
         
-        file_metadata = {'title': title, 'podcast_name': podcast_name, 'ep_number': ep_num, 'theme': theme}
+        file_metadata = {'title': title, 'podcast_name': podcast_name, 'ep_number': ep_num, 'theme': theme, 'site_name': data.get('site_name', '')}
         safe_ep_filename = build_report_filename(file_metadata).replace('.docx', '.mp3')
         audio_dest_path = os.path.join(MEDIA_DIR, safe_ep_filename)
         
@@ -2407,6 +2423,24 @@ def ensure_media_downloaded(data, progress_callback=None):
             if progress_callback:
                 progress_callback(100, f"Mídia existente no acervo local ({os.path.basename(audio_dest_path)})")
             return audio_dest_path
+            
+        # Fallback: busca na pasta por arquivo com título semelhante (caso renomeado ou baixado antes)
+        try:
+            title_clean = re.sub(r'[^\w\s]', '', title).strip().lower()
+            for fname in os.listdir(MEDIA_DIR):
+                if not fname.endswith('.mp3'):
+                    continue
+                fname_clean = re.sub(r'[^\w\s]', '', fname).strip().lower()
+                # Considera compatível se mais de 60% das palavras-chave do título estão no nome
+                title_words = [w for w in title_clean.split() if len(w) > 3]
+                if title_words and sum(1 for w in title_words if w in fname_clean) / len(title_words) >= 0.6:
+                    candidate = os.path.join(MEDIA_DIR, fname)
+                    if os.path.getsize(candidate) >= 1 * 1024 * 1024:
+                        if progress_callback:
+                            progress_callback(100, f"Mídia compatível encontrada no acervo ({fname})")
+                        return candidate
+        except Exception:
+            pass
             
         search_terms = []
         if title:
