@@ -2190,6 +2190,94 @@ def scrape_show_notes_url(description):
         pass
     return []
 
+def extract_songs_from_transcription(transcription_text, anchor_title="", anchor_description="", anchor_podcast=""):
+    """
+    Extrai músicas e artistas citados no texto da transcrição usando o título,
+    descrição e nome do podcast/canal como âncora para confirmar o artista principal.
+    Retorna lista de strings no formato 'Música - Artista (ano)' ou 'Artista - Obra'.
+    """
+    found = []
+    anchor_combined = f"{anchor_title} {anchor_description} {anchor_podcast}".lower()
+
+    # ── 1. Âncora: artista/banda confirmada pelo título ou descrição da fonte ─
+    # Detecta nomes próprios do contexto (bandas, artistas) nas âncoras
+    # e usa como filtro de confiança para o que está na transcrição.
+    anchor_artists = []
+    # Padrão: "Música - Artista" ou "Artista - Álbum" no título
+    m_dash = re.search(
+        r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+?)\s*[\-–]\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+)',
+        anchor_title
+    )
+    if m_dash:
+        for g in [m_dash.group(1).strip(), m_dash.group(2).strip()]:
+            if len(g) > 2:
+                anchor_artists.append(g.lower())
+    # Também coleta palavras capitalizadas do título como candidatos
+    for word in re.findall(r'\b([A-ZÁÉÍÓÚÀÂÊÔÃÕÜ][a-záéíóúàâêôãõü]+(?:\s+[A-ZÁÉÍÓÚÀÂÊÔÃÕÜ][a-záéíóúàâêôãõü]+)*)\b', anchor_title):
+        if len(word) > 3 and word.lower() not in ('podcast', 'canal', 'youtube', 'spotify', 'episódio', 'especial'):
+            anchor_artists.append(word.lower())
+
+    # ── 2. Padrões explícitos de citação de músicas na transcrição ────────────
+    text = transcription_text
+
+    # Padrão: "a música X de Y" / "a faixa X de Y" / "a canção X"
+    for m in re.finditer(
+        r'(?:a\s+(?:música|faixa|canção|track|song)\s+["\']?([^"\',\.]{3,50})["\']?'  
+        r'(?:\s+(?:do|da|de|dos|das|by)\s+([A-Za-zÀ-ÿ][^,\.]{2,30}))?)',
+        text, re.IGNORECASE
+    ):
+        song = m.group(1).strip().title()
+        artist = (m.group(2) or "").strip().title()
+        entry = f"{song} - {artist}" if artist else song
+        if entry not in found:
+            found.append(entry)
+
+    # Padrão: "X - Artista (ano)" citado diretamente
+    for m in re.finditer(
+        r'"([^"]{3,60})"\s*[\-–]\s*([A-Za-zÀ-ÿ][^,\.\(]{2,30})(?:\s*\((\d{4})\))?',
+        text
+    ):
+        song   = m.group(1).strip().title()
+        artist = m.group(2).strip().title()
+        year   = m.group(3) or ""
+        entry  = f"{song} - {artist}" + (f" ({year})" if year else "")
+        if entry not in found:
+            found.append(entry)
+
+    # ── 3. Validação por âncora ───────────────────────────────────────────────
+    # Se encontrou resultados, filtra os que contradizem claramente a âncora.
+    # (ex: se o título diz "Soundgarden", descarta entradas de artistas sem relação)
+    if found and anchor_artists:
+        def is_plausible(entry):
+            el = entry.lower()
+            # Aceita se algum artista-âncora aparece na entrada
+            for a in anchor_artists:
+                if a in el:
+                    return True
+            # Aceita entradas curtas (podem ser músicas sem artista explícito)
+            if len(entry) < 40:
+                return True
+            return False
+        validated = [e for e in found if is_plausible(e)]
+        if validated:
+            found = validated
+
+    # ── 4. Fallback: artista âncora + música do título ────────────────────────
+    # Se nenhum padrão foi encontrado, monta a entrada a partir das âncoras.
+    if not found and anchor_title:
+        # Tenta extrair "Música - Artista" do próprio título
+        m_t = re.search(
+            r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\(\)]+?)\s*[\-–]\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+)',
+            anchor_title
+        )
+        if m_t:
+            found.append(f"{m_t.group(1).strip()} - {m_t.group(2).strip()}")
+        else:
+            found.append(anchor_title.strip())
+
+    return found[:20]  # limita a 20 entradas
+
+
 def enrich_and_cross_reference(data, primary_analysis):
     """
     Estágio 2: Cruzamento, Validação e Enriquecimento.
@@ -2197,42 +2285,49 @@ def enrich_and_cross_reference(data, primary_analysis):
     e realiza pesquisas na internet (Wikipedia, iTunes API) para corrigir nomes, preencher datas e contexto.
     """
     songs = data.get('songs', [])
-    tips = data.get('tips', [])
-    
-    album_tracks = fetch_album_tracklist_if_present(data.get('title', ''), data.get('description', ''))
-    if album_tracks:
-        songs = album_tracks
-    else:
-        web_tracks = scrape_show_notes_url(data.get('description', ''))
-        if web_tracks:
-            for wt in web_tracks:
-                if wt not in songs:
-                    songs.append(wt)
-                    
-    if not songs:
-        desc = data.get('description', '')
-        songs_match = re.search(r'As músicas:\s*(.*?)(?:As dicas:|$)', desc, re.DOTALL | re.IGNORECASE)
-        if songs_match:
-            songs_text = songs_match.group(1).strip()
-            raw_songs = re.findall(r'\d+\)\s*([^;]+)', songs_text)
-            for s in raw_songs:
-                clean_s = s.strip()
-                if clean_s and clean_s not in songs:
-                    songs.append(clean_s)
-                    
-        tips_match = re.search(r'As dicas:\s*(.*)', desc, re.DOTALL | re.IGNORECASE)
-        if tips_match:
-            tips_text = tips_match.group(1).strip()
-            raw_tips = tips_text.split(';')
-            for t in raw_tips:
-                clean_t = t.strip()
-                if clean_t and clean_t not in tips:
-                    tips.append(clean_t)
+    tips  = data.get('tips', [])
 
-    if not songs and primary_analysis.get('has_media'):
-        for ref in primary_analysis.get('extracted_references', []):
-            if 'Referência' in ref:
-                songs.append(ref)
+    transcription_text = data.get('transcription_text', '')
+
+    if transcription_text:
+        # ── Caminho A: transcrição disponível → extrai músicas direto do texto ─
+        songs_from_trans = extract_songs_from_transcription(
+            transcription_text,
+            anchor_title       = data.get('title', ''),
+            anchor_description = data.get('description', ''),
+            anchor_podcast     = data.get('podcast_name', '')
+        )
+        if songs_from_trans:
+            songs = songs_from_trans
+        else:
+            # Transcrição existiu mas não encontrou músicas pelo padrão
+            # → usa o título como âncora mínima
+            songs = [data.get('title', 'Conteúdo analisado')]
+
+    else:
+        # ── Caminho B: sem transcrição → usa título/metadados como âncora ─────
+        # Tenta extrair artista e obra do título
+        title_raw = data.get('title', '')
+        description = data.get('description', '')
+        m_anchor = re.search(
+            r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+?)\s*[\-–]\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+)',
+            title_raw
+        )
+        if m_anchor:
+            song_part   = m_anchor.group(1).strip()
+            artist_part = m_anchor.group(2).strip()
+            songs = [
+                f"{song_part} - {artist_part}",
+                f"[Nota] Transcrição não realizada — músicas identificadas a partir do título da fonte"
+            ]
+        elif title_raw:
+            songs = [
+                title_raw,
+                f"[Nota] Transcrição não realizada — conteúdo identificado pelo título da fonte"
+            ]
+        else:
+            songs = ["[Nota] Sem transcrição e sem título disponível para identificar o conteúdo"]
+
                 
     if not songs:
         songs = [
@@ -2531,6 +2626,8 @@ def generate_transcription_report(audio_path, data, output_dir, progress_callbac
 
                 text = transcribe_result.get("text", "")
                 if text:
+                    # Salva texto bruto para uso no enriquecimento (Estágio 3)
+                    data['transcription_text'] = text
                     raw_sentences = [s.strip() for s in text.split('.') if s.strip()]
                     chunk_para = ""
                     for sent in raw_sentences:
