@@ -2010,8 +2010,21 @@ def run_interactive():
             mode = int(mode_str)
             break
         print("\n[AVISO] Opção inválida. Escolha 1, 2 ou 3.")
-        
-    process_reports(urls, mode, ".")
+
+    while True:
+        print("\n-----------------------------------------------------------------------")
+        print("Deseja realizar a transcrição do áudio? (Estágio 2)")
+        print("-----------------------------------------------------------------------")
+        print("[1] Sim — gerar documento Word com a transcrição fiel do episódio")
+        print("[2] Não — pular a transcrição e avançar direto para a análise")
+        print("-----------------------------------------------------------------------")
+        trans_str = input("Digite o número da opção desejada [1 ou 2]: ").strip()
+        if trans_str in ['1', '2']:
+            realizar_transcricao = (trans_str == '1')
+            break
+        print("\n[AVISO] Opção inválida. Escolha 1 ou 2.")
+
+    process_reports(urls, mode, ".", transcricao=realizar_transcricao)
 
 def analyze_primary_media(audio_path, data):
     """
@@ -2554,7 +2567,7 @@ def handle_execution_error(error_msg):
         print("\nAplicação encerrada pelo usuário.\n")
         sys.exit(0)
 
-def process_reports(urls, mode, outdir):
+def process_reports(urls, mode, outdir, transcricao=True):
     import threading, time
     try:
         print("\n=======================================================================")
@@ -2591,10 +2604,15 @@ def process_reports(urls, mode, outdir):
             audio_path = stage1_result["audio_path"]
 
             # ── Estágio 2: Transcrição via Whisper ───────────────────────────
-            # (animação já integrada dentro de generate_transcription_report)
-            transcription_path = generate_transcription_report(audio_path, data, outdir,
-                                                               progress_callback=lambda pct, d="": render_stage_progress(2, 4, "", pct))
-            data['transcription_path'] = transcription_path
+            if transcricao:
+                # (animação já integrada dentro de generate_transcription_report)
+                transcription_path = generate_transcription_report(audio_path, data, outdir,
+                                                                   progress_callback=lambda pct, d="": render_stage_progress(2, 4, "", pct))
+                data['transcription_path'] = transcription_path
+            else:
+                render_stage_progress(2, 4, "", 100)
+                print("  [Transcrição ignorada conforme opção selecionada]")
+                data['transcription_path'] = None
 
             # ── Estágio 3: Pesquisa e Enriquecimento ─────────────────────────
             stage3_result = {"primary": None, "data": data}
@@ -2664,6 +2682,8 @@ def main():
     parser.add_argument('--mode', type=int, choices=[1, 2, 3], required=False, help="1=Separados, 2=Conjunto, 3=Ambos")
     parser.add_argument('--urls', nargs='+', required=False, help="Lista de URLs para análise")
     parser.add_argument('--outdir', type=str, default=".", help="Diretório de saída")
+    parser.add_argument('--transcricao', action='store_true', default=True, help="Realizar transcrição do áudio no Estágio 2 (padrão: ativo)")
+    parser.add_argument('--sem-transcricao', dest='transcricao', action='store_false', help="Pular a transcrição do áudio no Estágio 2")
     
     args = parser.parse_args()
     
@@ -2673,7 +2693,7 @@ def main():
         parsed_urls = []
         for u_arg in args.urls:
             parsed_urls.extend(parse_urls_input(u_arg))
-        process_reports(parsed_urls, args.mode, args.outdir)
+        process_reports(parsed_urls, args.mode, args.outdir, transcricao=args.transcricao)
 
 if __name__ == '__main__':
     main()
