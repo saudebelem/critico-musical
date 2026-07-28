@@ -2610,7 +2610,6 @@ def process_reports(urls, mode, outdir, transcricao=True):
                                                                    progress_callback=lambda pct, d="": render_stage_progress(2, 4, "", pct))
                 data['transcription_path'] = transcription_path
             else:
-                render_stage_progress(2, 4, "", 100)
                 print("  [Transcrição ignorada conforme opção selecionada]")
                 data['transcription_path'] = None
 
