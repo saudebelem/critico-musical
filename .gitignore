@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Ambiente virtual
+venv/
+.venv/
+env/
+.env/
+
+# Variáveis de ambiente e segredos
+.env
+*.env
+secrets.json
+config.local.*
+
+# Mídias baixadas (arquivos grandes de áudio/vídeo)
+mídias baixadas/
+midias baixadas/
+
+# Relatórios gerados (saídas do script, não código-fonte)
+relatórios aprovados/
+relatorios aprovados/
+*.docx
+
+# Transcrições e documentos temporários
+*[Tt]ranscrição*.docx
+*[Tt]ranscricao*.docx
+
+# Workspace do VS Code / editor
+*.code-workspace
+.vscode/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
