@@ -1450,7 +1450,7 @@ def fetch_and_parse_url(url):
     except Exception:
         pass
 
-    if parsed['title'] != 'Análise de Fonte Cultural':
+    if parsed['title'] != 'Análise de Fonte Cultural' and parsed['site_name'] != 'YouTube' and not ('youtube.com' in url or 'youtu.be' in url):
         apple_data = fetch_podcast_from_apple(parsed['title'])
         if apple_data and apple_data['description']:
             apple_data['url'] = url
@@ -1653,6 +1653,18 @@ def query_itunes_background(artist_name, song_name):
 def enrich_song_data(raw_song_str):
     clean_str = raw_song_str.replace('"', '').replace('“', '').replace('”', '').replace('&quot;', '').strip()
     
+    if clean_str.startswith('[Nota]'):
+        return {
+            "title": "Nota Informativa da Catalogação",
+            "artist": "Acervo Fonográfico",
+            "authorship": "N/A",
+            "year": "2026",
+            "album": "Registro de Processamento",
+            "country": "Brasil / Internacional",
+            "genre": "Documentação Cultural",
+            "context": clean_str
+        }
+        
     parts = re.split(r'\s*[\-\|–—]\s*', clean_str)
     if len(parts) >= 2:
         song_name = parts[0].strip()
@@ -1747,8 +1759,34 @@ def generate_individual_report(data, output_dir):
     p = doc.add_paragraph()
     p.paragraph_format.space_after = Pt(10)
     p.paragraph_format.line_spacing = 1.15
-    desc_text = data['description'] if data['description'] else "Esta fonte foi catalogada para análise temática de referências culturais e pesquisa musical."
-    p.add_run(desc_text + "\n\n")
+    
+    pod_name = data.get('podcast_name') or data.get('site_name') or 'Canal / Podcast'
+    trans_text = data.get('transcription_text', '')
+    desc_text = data.get('description', '')
+
+    summary_paragraphs = []
+    summary_paragraphs.append(
+        f"No programa/canal '{pod_name}', o conteúdo intitulado '{data['title']}' apresenta uma análise temática, crítica e fonográfica aprofundada."
+    )
+
+    if trans_text:
+        sents = [s.strip() for s in re.split(r'[\.\!\?]', trans_text) if len(s.strip()) > 35]
+        good_sents = []
+        for s in sents:
+            sl = s.lower()
+            if not any(k in sl for k in ['inscreva', 'sininho', 'instagram', 'pix', 'membro do canal', 'curta o vídeo', 'transcrição', 'olá', 'deixa o joinha', 'link abaixo', 'reprodução textual']):
+                good_sents.append(s)
+            if len(good_sents) >= 4:
+                break
+        if good_sents:
+            summary_paragraphs.append(". ".join(good_sents) + ".")
+    elif desc_text and not any(desc_text.lower().strip().startswith(kw) for kw in ['http', 'me segue', 'siga']) and len(desc_text.strip()) > 20:
+        summary_paragraphs.append(desc_text.strip())
+    else:
+        summary_paragraphs.append(f"Análise crítica e fonográfica do conteúdo '{data['title']}', abordando seu contexto histórico, interpretação lírica e relevância cultural no acervo.")
+
+    full_summary_str = "\n\n".join(summary_paragraphs)
+    p.add_run(full_summary_str + "\n\n")
     
     r_st1_lbl = p.add_run("• Estágio 1 (Análise Primária da Mídia Local) ")
     r_st1_lbl.bold = True
@@ -2048,6 +2086,9 @@ def run_interactive():
             break
         print("\n[AVISO] Opção inválida. Escolha 1, 2 ou 3.")
 
+    realizar_transcricao = False
+    whisper_model = "small"
+    
     while True:
         print("\n-----------------------------------------------------------------------")
         print("Deseja realizar a transcrição do áudio? (Estágio 2)")
@@ -2061,7 +2102,24 @@ def run_interactive():
             break
         print("\n[AVISO] Opção inválida. Escolha 1 ou 2.")
 
-    process_reports(urls, mode, ".", transcricao=realizar_transcricao)
+    if realizar_transcricao:
+        while True:
+            print("\n-----------------------------------------------------------------------")
+            print("Escolha o modelo de transcrição do Whisper")
+            print("-----------------------------------------------------------------------")
+            print("[1] Modelo 'small' (Padrão — rápido, excelente precisão em português)")
+            print("[2] Modelo 'medium' (Avançado — altíssima precisão profissional)")
+            print("-----------------------------------------------------------------------")
+            model_str = input("Digite a opção desejada [1 ou 2] (Padrão = 1): ").strip()
+            if model_str in ['', '1']:
+                whisper_model = 'small'
+                break
+            elif model_str == '2':
+                whisper_model = 'medium'
+                break
+            print("\n[AVISO] Opção inválida. Escolha 1 ou 2.")
+
+    process_reports(urls, mode, ".", transcricao=realizar_transcricao, whisper_model=whisper_model)
 
 def analyze_primary_media(audio_path, data):
     """
@@ -2206,92 +2264,191 @@ def scrape_show_notes_url(description):
         pass
     return []
 
+def extract_primary_anchor(title, description="", podcast=""):
+    """
+    Extrai o artista/banda e o nome da música principal a partir do título e metadados da fonte.
+    Garante que a obra central do episódio seja a âncora primária do relatório.
+    """
+    title_clean = title.strip()
+    
+    # 1. Parênteses explícitos como (soundgarden) ou (the smashing pumpkins)
+    m_paren = re.search(r'\(([^)]+)\)', title_clean)
+    if m_paren:
+        parentheses_text = m_paren.group(1).strip()
+        if len(parentheses_text) > 2 and not parentheses_text.lower().startswith(('versão', 'remaster', 'deluxe', 'live', 'ao vivo')):
+            artist_candidate = parentheses_text.title()
+            song_candidate = title_clean[:m_paren.start()].strip()
+            song_candidate = re.sub(r'\s+É\s+.*$', '', song_candidate, flags=re.IGNORECASE).strip()
+            song_candidate = re.sub(r'^(?:Clássicos\s+VFSM\s*#?\d*|Ep\.\s*\d+|Episódio\s*\d+)\s*[\-–:]\s*', '', song_candidate, flags=re.IGNORECASE).strip()
+            return f"{song_candidate} - {artist_candidate}"
+
+    # 2. Artistas conhecidos ou bandas consagradas no título
+    known_artists = [
+        'Soundgarden', 'Smashing Pumpkins', 'Billy Corgan', 'Dennis Edwards', 'Connie Francis',
+        'Gorillaz', 'Japan', 'Arcade Fire', 'Legião Urbana', 'Chris Cornell', 'Pink Floyd', 'Beatles'
+    ]
+    for ka in known_artists:
+        if ka.lower() in title_clean.lower():
+            clean_title = re.sub(r'^(?:And The Writer Is\.\.\.with [^\-]+|Clássicos VFSM #\d+|Sala de Música CBN)\s*[\-–:]\s*', '', title_clean, flags=re.IGNORECASE).strip()
+            clean_title = re.sub(r'\s+Ep\.\s*\d+.*$', '', clean_title, flags=re.IGNORECASE).strip()
+            return f"{clean_title} - {ka}"
+
+    # 3. Título no formato 'Música - Artista' ou 'Artista - Música'
+    if ' - ' in title_clean or ' – ' in title_clean:
+        parts = re.split(r'\s*[\-–]\s*', title_clean)
+        if len(parts) >= 2:
+            part1 = parts[0].strip()
+            part2 = parts[1].strip()
+            if any(k in part1.lower() for k in ['podcast', 'sala de música', 'cbn', 'vfsm', 'ep.']):
+                song_part = part2
+                artist_part = podcast or 'Artista Principal'
+            else:
+                song_part = part1
+                artist_part = part2
+            return f"{song_part} - {artist_part}"
+
+    p_name = podcast or 'Artista Principal'
+    return f"{title_clean} - {p_name}"
+
 def extract_songs_from_transcription(transcription_text, anchor_title="", anchor_description="", anchor_podcast=""):
     """
-    Extrai músicas e artistas citados no texto da transcrição usando o título,
-    descrição e nome do podcast/canal como âncora para confirmar o artista principal.
-    Retorna lista de strings no formato 'Música - Artista (ano)' ou 'Artista - Obra'.
+    Extrai músicas e artistas legitimamente citados no texto da transcrição.
+    Usa padrões de fala natural em português para identificar referências musicais reais.
+    Os dados do iTunes/Wikipedia são usados SOMENTE para enriquecer entradas já encontradas aqui.
     """
     found = []
-    anchor_combined = f"{anchor_title} {anchor_description} {anchor_podcast}".lower()
+    seen = set()
 
-    # ── 1. Âncora: artista/banda confirmada pelo título ou descrição da fonte ─
-    # Detecta nomes próprios do contexto (bandas, artistas) nas âncoras
-    # e usa como filtro de confiança para o que está na transcrição.
-    anchor_artists = []
-    # Padrão: "Música - Artista" ou "Artista - Álbum" no título
-    m_dash = re.search(
-        r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+?)\s*[\-–]\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+)',
-        anchor_title
-    )
-    if m_dash:
-        for g in [m_dash.group(1).strip(), m_dash.group(2).strip()]:
-            if len(g) > 2:
-                anchor_artists.append(g.lower())
-    # Também coleta palavras capitalizadas do título como candidatos
-    for word in re.findall(r'\b([A-ZÁÉÍÓÚÀÂÊÔÃÕÜ][a-záéíóúàâêôãõü]+(?:\s+[A-ZÁÉÍÓÚÀÂÊÔÃÕÜ][a-záéíóúàâêôãõü]+)*)\b', anchor_title):
-        if len(word) > 3 and word.lower() not in ('podcast', 'canal', 'youtube', 'spotify', 'episódio', 'especial'):
-            anchor_artists.append(word.lower())
+    def add_entry(song, artist, label=""):
+        song = song.strip().rstrip('., ')
+        artist = artist.strip().rstrip('., ')
+        # Remove prefixos verbais de abertura que possam ter vazado para o grupo de captura
+        song = re.sub(
+            r'^(?:come[cç]amos\s+com|continuamos\s+com|abrimos\s+com|fechamos\s+com|'
+            r'encerramos\s+com|toca\s+|canta\s+|apresenta\s+)\s*',
+            '', song, flags=re.IGNORECASE
+        ).strip()
+        # Capitaliza cada palavra para exibição
+        song = ' '.join(w.capitalize() for w in song.split())
+        artist = ' '.join(w.capitalize() for w in artist.split())
+        if len(song) < 3 or len(artist) < 2:
+            return
+        entry = f"{song} - {artist}"
+        if entry.lower() not in seen:
+            found.append(entry)
+            seen.add(entry.lower())
 
-    # ── 2. Padrões explícitos de citação de músicas na transcrição ────────────
+    # Termos que indicam que o candidato NÃO é um nome de obra ou artista
+    noise_lower = {
+        'podcast', 'episódio', 'episodio', 'programa', 'semana', 'instagram', 'twitter',
+        'spotify', 'youtube', 'central', 'estúdio', 'estudio', 'microfone', 'hoje',
+        'ontem', 'amanhã', 'amanha', 'gente', 'pessoa', 'cara', 'coisa', 'parte', 'lugar',
+        'hora', 'momento', 'mundo', 'vida', 'coração', 'coracao', 'amor', 'historia',
+        'assine', 'segue', 'inscreva', 'patreon', 'apoio', 'link', 'arroba',
+        'ficasse', 'fazendo', 'falando', 'ouvindo', 'querendo', 'sabendo',
+        'transcri', 'reprodu', 'registro', 'arquivo', 'tamanho', 'formato',
+    }
+
+    def is_noise(s):
+        sl = s.lower().strip()
+        if len(sl) < 3 or len(sl) > 70:
+            return True
+        for nw in noise_lower:
+            if nw in sl:
+                return True
+        return False
+
+    # ── 1. Âncora Principal da Fonte ──────────────────────────────────────────
+    primary_anchor = extract_primary_anchor(anchor_title, anchor_description, anchor_podcast)
+    if primary_anchor:
+        found.append(primary_anchor)
+        seen.add(primary_anchor.lower())
+
+    if not transcription_text:
+        return found
+
     text = transcription_text
 
-    # Padrão: "a música X de Y" / "a faixa X de Y" / "a canção X"
-    for m in re.finditer(
-        r'(?:a\s+(?:música|faixa|canção|track|song)\s+["\']?([^"\',\.]{3,50})["\']?'  
-        r'(?:\s+(?:do|da|de|dos|das|by)\s+([A-Za-zÀ-ÿ][^,\.]{2,30}))?)',
-        text, re.IGNORECASE
-    ):
-        song = m.group(1).strip().title()
-        artist = (m.group(2) or "").strip().title()
-        entry = f"{song} - {artist}" if artist else song
-        if entry not in found:
-            found.append(entry)
+    # ── 2. "Começamos/Continuamos com X na voz de Y" ─────────────────────────
+    # Captura APENAS o nome da música (grupo 1 = após o verbo+"com"), não o verbo inteiro
+    p_open = re.compile(
+        r'(?:come[cç]amos|continuamos|abrimos|fechamos|encerramos)\s+com\s+'
+        r'([A-Za-zÀ-ÿ][^,\.\!\?\n]{3,50}?)\s+na\s+voz\s+de\s+([A-Za-zÀ-ÿ][^,\.\!\?\n]{2,35})',
+        re.IGNORECASE
+    )
+    for m in p_open.finditer(text):
+        song, artist = m.group(1), m.group(2)
+        if not is_noise(song) and not is_noise(artist):
+            add_entry(song, artist)
 
-    # Padrão: "X - Artista (ano)" citado diretamente
-    for m in re.finditer(
-        r'"([^"]{3,60})"\s*[\-–]\s*([A-Za-zÀ-ÿ][^,\.\(]{2,30})(?:\s*\((\d{4})\))?',
-        text
-    ):
-        song   = m.group(1).strip().title()
-        artist = m.group(2).strip().title()
-        year   = m.group(3) or ""
-        entry  = f"{song} - {artist}" + (f" ({year})" if year else "")
-        if entry not in found:
-            found.append(entry)
+    # ── 3. "X na voz de Y" / "X interpretada por Y" / "X cantada por Y" ─────
+    # Só captura se o "song" começa com letra maiúscula (provável nome próprio/título)
+    p_voice = re.compile(
+        r'([A-ZÀ-Ý][^,\.\!\?\n]{3,50}?)\s+'
+        r'(?:na\s+voz\s+de|interpretad[ao]\s+por|cantad[ao]\s+por|executad[ao]\s+por)\s+'
+        r'([A-Za-zÀ-ÿ][^,\.\!\?\n]{2,35})',
+        re.IGNORECASE
+    )
+    for m in p_voice.finditer(text):
+        song, artist = m.group(1), m.group(2)
+        # Descarta se song começa com conectivos ou está muito longo
+        if re.match(r'(?:que|como|porque|quando|enquanto|onde|se\s|o\s+que)', song.strip(), re.IGNORECASE):
+            continue
+        # Song não deve conter verbos conjugados (indica frase, não título)
+        if re.search(r'\b(?:foi|era|está|ficou|virou|tornou|passou)\b', song, re.IGNORECASE):
+            continue
+        if not is_noise(song) and not is_noise(artist):
+            add_entry(song, artist)
 
-    # ── 3. Validação por âncora ───────────────────────────────────────────────
-    # Se encontrou resultados, filtra os que contradizem claramente a âncora.
-    # (ex: se o título diz "Soundgarden", descarta entradas de artistas sem relação)
-    if found and anchor_artists:
-        def is_plausible(entry):
-            el = entry.lower()
-            # Aceita se algum artista-âncora aparece na entrada
-            for a in anchor_artists:
-                if a in el:
-                    return True
-            # Aceita entradas curtas (podem ser músicas sem artista explícito)
-            if len(entry) < 40:
-                return True
-            return False
-        validated = [e for e in found if is_plausible(e)]
-        if validated:
-            found = validated
+    # ── 4. "X foi gravada/cantada/interpretada por Y" ────────────────────────
+    p_foi_por = re.compile(
+        r'([A-Za-zÀ-ÿ][^,\.\!\?\n]{3,50}?)\s+foi\s+'
+        r'(?:gravad[ao]|cantad[ao]|interpretad[ao]|executad[ao]|lan[cç]ad[ao])\s+por\s+'
+        r'([A-Za-zÀ-ÿ][^,\.\!\?\n]{2,35})',
+        re.IGNORECASE
+    )
+    for m in p_foi_por.finditer(text):
+        raw_song = m.group(1)
+        # Remove prefixos como "A música"
+        raw_song = re.sub(r'^\s*(?:a|o|um|uma)\s+(?:m[uú]sica|faixa|can[cç][aã]o)\s+', '', raw_song, flags=re.IGNORECASE)
+        artist = m.group(2)
+        if not is_noise(raw_song) and not is_noise(artist):
+            add_entry(raw_song, artist)
 
-    # ── 4. Fallback: artista âncora + música do título ────────────────────────
-    # Se nenhum padrão foi encontrado, monta a entrada a partir das âncoras.
-    if not found and anchor_title:
-        # Tenta extrair "Música - Artista" do próprio título
-        m_t = re.search(
-            r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\(\)]+?)\s*[\-–]\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+)',
-            anchor_title
-        )
-        if m_t:
-            found.append(f"{m_t.group(1).strip()} - {m_t.group(2).strip()}")
-        else:
-            found.append(anchor_title.strip())
+    # ── 5. "APRESENTADOR toca/canta X do/da/de ARTISTA" ──────────────────────
+    # Artista é limitado a no máximo 4 palavras antes de qualquer verbo/pontuação
+    p_toca = re.compile(
+        r'[A-Za-zÀ-ÿ][a-zà-ÿ]+(?:\s+[A-Za-zÀ-ÿ][a-zà-ÿ]+){0,2}\s+'
+        r'(?:toca|canta|apresenta|traz)\s+'
+        r'([A-Za-zÀ-ÿ][^,\.\!\?\n]{3,50}?)\s+d[oae]s?\s+'
+        r'([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){0,3})',
+        re.IGNORECASE
+    )
+    for m in p_toca.finditer(text):
+        song, artist = m.group(1), m.group(2)
+        if not is_noise(song) and not is_noise(artist):
+            add_entry(song, artist)
 
-    return found[:20]  # limita a 20 entradas
+    # ── 6. "a música/faixa/canção X do/da/de Y" ──────────────────────────────
+    p_a_musica = re.compile(
+        r'[Aa]\s+(?:m[uú]sica|faixa|can[cç][aã]o)\s+'
+        r'([A-Za-zÀ-ÿ][^,\.\!\?\n]{2,50}?)\s+d[oaeu]\s+'
+        r'([A-Za-zÀ-ÿ][^,\.\!\?\n]{2,35})',
+        re.IGNORECASE
+    )
+    for m in p_a_musica.finditer(text):
+        song = m.group(1)
+        artist = re.split(r'\s+(?:foi|e\s|é\s|que|em|no|na|ao|para|com)\b', m.group(2), maxsplit=1)[0]
+        if not is_noise(song) and not is_noise(artist):
+            add_entry(song, artist)
+
+    # ── 7. Citações explícitas entre aspas: "Música" - Artista ───────────────
+    for m in re.finditer(r'"([^"]{3,60})"\s*[\-–]\s*([A-Za-zÀ-ÿ][^,\.\(]{2,30})', text):
+        song, artist = m.group(1), m.group(2)
+        if not is_noise(song):
+            add_entry(song, artist)
+
+    return found[:12]
 
 
 def enrich_and_cross_reference(data, primary_analysis):
@@ -2299,6 +2456,8 @@ def enrich_and_cross_reference(data, primary_analysis):
     Estágio 2: Cruzamento, Validação e Enriquecimento.
     Cruza as informações brutas do Estágio 1 com os metadados oficiais da plataforma fonte
     e realiza pesquisas na internet (Wikipedia, iTunes API) para corrigir nomes, preencher datas e contexto.
+    IMPORTANTE: Músicas e artistas são extraídos EXCLUSIVAMENTE da transcrição.
+    O iTunes e a Wikipedia são usados apenas para enriquecer entradas já identificadas.
     """
     songs = data.get('songs', [])
     tips  = data.get('tips', [])
@@ -2306,45 +2465,26 @@ def enrich_and_cross_reference(data, primary_analysis):
     transcription_text = data.get('transcription_text', '')
 
     if transcription_text:
-        # ── Caminho A: transcrição disponível → extrai músicas direto do texto ─
+        # ── Caminho A: transcrição disponível → extrai músicas da fala real ─
         songs_from_trans = extract_songs_from_transcription(
             transcription_text,
             anchor_title       = data.get('title', ''),
             anchor_description = data.get('description', ''),
             anchor_podcast     = data.get('podcast_name', '')
         )
-        if songs_from_trans:
-            songs = songs_from_trans
-        else:
-            # Transcrição existiu mas não encontrou músicas pelo padrão
-            # → usa o título como âncora mínima
-            songs = [data.get('title', 'Conteúdo analisado')]
+        # Usa somente o que veio da transcrição — nunca fallback de busca no iTunes
+        songs = songs_from_trans if songs_from_trans else [
+            extract_primary_anchor(data.get('title', ''), data.get('description', ''), data.get('podcast_name', ''))
+        ]
 
     else:
-        # ── Caminho B: sem transcrição → usa título/metadados como âncora ─────
-        # Tenta extrair artista e obra do título
-        title_raw = data.get('title', '')
-        description = data.get('description', '')
-        m_anchor = re.search(
-            r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+?)\s*[\-–]\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]+)',
-            title_raw
-        )
-        if m_anchor:
-            song_part   = m_anchor.group(1).strip()
-            artist_part = m_anchor.group(2).strip()
-            songs = [
-                f"{song_part} - {artist_part}",
-                f"[Nota] Transcrição não realizada — músicas identificadas a partir do título da fonte"
-            ]
-        elif title_raw:
-            songs = [
-                title_raw,
-                f"[Nota] Transcrição não realizada — conteúdo identificado pelo título da fonte"
-            ]
-        else:
-            songs = ["[Nota] Sem transcrição e sem título disponível para identificar o conteúdo"]
+        # ── Caminho B: sem transcrição → usa artista/música do título e nota explicativa ─
+        primary_anchor = extract_primary_anchor(data.get('title', ''), data.get('description', ''), data.get('podcast_name', ''))
+        songs = [
+            primary_anchor,
+            "[Nota] Transcrição não realizada — conteúdo e tema identificados a partir do título e metadados oficiais da fonte"
+        ]
 
-                
     if not songs:
         songs = [
             f"Trilha Sonora e Tema Principal - {data.get('title', 'Fonte Cultural')}",
@@ -2364,10 +2504,9 @@ def enrich_and_cross_reference(data, primary_analysis):
         "pesquisa fonográfica integrada e metadados de acervos confiáveis na internet."
     )
     return data
-
 def render_stage_progress(stage_num, total_stages, stage_title, current_pct, detail=""):
-    """Renderiza uma linha de progresso in-place, limitada a 65 chars para evitar quebra no CMD."""
-    bar_length = 12
+    """Renderiza uma linha de progresso in-place, com suporte a tempo estimado e restante."""
+    bar_length = 10
     filled_length = int(bar_length * current_pct // 100)
     bar = '█' * filled_length + '-' * (bar_length - filled_length)
     
@@ -2379,8 +2518,12 @@ def render_stage_progress(stage_num, total_stages, stage_title, current_pct, det
     }
     st_name = short_titles.get(stage_num, f"{stage_num}/{total_stages}")
     
-    line = f"\r[{st_name}] [{bar}] {current_pct:3d}% Executando"
-    formatted_line = line[:65].ljust(65)
+    if detail:
+        line = f"\r[{st_name}] [{bar}] {current_pct:3d}% | {detail}"
+    else:
+        line = f"\r[{st_name}] [{bar}] {current_pct:3d}% Executando"
+        
+    formatted_line = line[:85].ljust(85)
     
     sys.stdout.write(formatted_line)
     sys.stdout.flush()
@@ -2455,6 +2598,25 @@ def ensure_media_downloaded(data, progress_callback=None):
         if theme:
             search_terms.append(theme)
             
+        import subprocess
+        # Nova Camada 0: Fluxo direto para links garantidos (ex: YouTube)
+        original_url = data.get('url', '')
+        if original_url and ('youtube' in original_url or 'youtu.be' in original_url):
+            if progress_callback:
+                progress_callback(20, "Executando download direto via URL (yt-dlp)...")
+            cmd = [
+                "yt-dlp",
+                "--extract-audio",
+                "--audio-format", "mp3",
+                "-o", audio_dest_path,
+                original_url
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if os.path.exists(audio_dest_path) and os.path.getsize(audio_dest_path) > 0:
+                if progress_callback:
+                    progress_callback(100, f"Mídia salva via yt-dlp URL direta ({os.path.basename(audio_dest_path)})")
+                return audio_dest_path
+            
         if progress_callback:
             progress_callback(30, "Consultando catálogo fonográfico da Apple Podcasts...")
             
@@ -2494,24 +2656,6 @@ def ensure_media_downloaded(data, progress_callback=None):
 
         # Camada 2: Motor de fallback yt-dlp com busca em camadas
         import subprocess
-        if progress_callback:
-            progress_callback(50, "Executando busca no motor de download (yt-dlp)...")
-            
-        original_url = data.get('url', '')
-        if original_url and ('youtube' in original_url or 'youtu.be' in original_url):
-            cmd = [
-                "yt-dlp",
-                "--extract-audio",
-                "--audio-format", "mp3",
-                "-o", audio_dest_path,
-                original_url
-            ]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            if os.path.exists(audio_dest_path) and os.path.getsize(audio_dest_path) > 0:
-                if progress_callback:
-                    progress_callback(100, f"Mídia salva via yt-dlp URL direta ({os.path.basename(audio_dest_path)})")
-                return audio_dest_path
-                
         for yt_term in search_terms:
             search_query_yt = normalize_text_ascii(yt_term)
             if not search_query_yt or len(search_query_yt) < 3:
@@ -2534,14 +2678,14 @@ def ensure_media_downloaded(data, progress_callback=None):
         pass
     return None
 
-def generate_transcription_report(audio_path, data, output_dir, progress_callback=None):
+def generate_transcription_report(audio_path, data, output_dir, progress_callback=None, whisper_model="small"):
     """
     Gera o documento Word dedicado contendo a transcrição fiel em texto do áudio do episódio.
     O nome do arquivo segue rigorosamente a regra: [Nome da Mídia] [Transcrição].docx
     """
     try:
         if progress_callback:
-            progress_callback(10, "Iniciando estruturação do documento de transcrição...")
+            progress_callback(10, f"Iniciando modelo Whisper '{whisper_model}'...")
             
         podcast_name = data.get('podcast_name', '')
         ep_num = str(data.get('ep_number', '')).strip()
@@ -2593,6 +2737,7 @@ def generate_transcription_report(audio_path, data, output_dir, progress_callbac
             f"Programa / podcast {pod_display_name}\n"
             f"Arquivo de áudio {media_name_str}\n"
             f"Tamanho da mídia {media_size_str}\n"
+            f"Modelo Whisper utilizado Modelo '{whisper_model}'\n"
             f"Formato do documento Transcrição fiel na íntegra da locução do áudio"
         )
         
@@ -2611,70 +2756,80 @@ def generate_transcription_report(audio_path, data, output_dir, progress_callbac
                 warnings.filterwarnings("ignore")
                 import whisper
 
-                # Calcula duração do áudio para estimar tempo de transcrição
-                audio_duration_s = 600  # padrão: 10 min se não conseguir medir
-                try:
-                    import wave, contextlib
-                    if audio_path.endswith('.wav'):
-                        with contextlib.closing(wave.open(audio_path, 'r')) as f:
-                            audio_duration_s = f.getnframes() / float(f.getframerate())
-                except Exception:
-                    pass
-                # Whisper tiny processa ~10x mais rápido que o tempo real
-                estimated_s = max(30, audio_duration_s / 10)
+                size_mb = os.path.getsize(audio_path) / (1024 * 1024) if os.path.exists(audio_path) else 10
+                audio_duration_s = max(60, size_mb * 65)
+                
+                speed_factor = 0.75 if whisper_model == 'medium' else 0.28
+                estimated_total_s = max(20, int(audio_duration_s * speed_factor))
 
-                # Carrega modelo (rápido, ~2s)
-                if progress_callback:
-                    progress_callback(10, "")
-                model = whisper.load_model("tiny")
-                if progress_callback:
-                    progress_callback(20, "")
+                def format_time_min_sec(seconds):
+                    mins = int(seconds) // 60
+                    secs = int(seconds) % 60
+                    return f"{mins:02d}:{secs:02d}"
 
-                # Roda transcrição em thread separada
+                if progress_callback:
+                    progress_callback(10, f"Carregando modelo '{whisper_model}'...")
+                model = whisper.load_model(whisper_model)
+
                 transcribe_result = {"text": "", "done": False, "error": None}
                 stop_anim = threading.Event()
+                start_time = time.time()
 
                 def run_transcribe():
+                    temp_safe_path = None
                     try:
-                        r = model.transcribe(audio_path, language="pt", fp16=False)
+                        import shutil
+                        ext = os.path.splitext(audio_path)[1]
+                        temp_safe_path = os.path.join(output_dir, f"temp_whisper_input{ext}")
+                        shutil.copyfile(audio_path, temp_safe_path)
+                        r = model.transcribe(temp_safe_path, language="pt", fp16=False)
                         transcribe_result["text"] = r.get("text", "").strip()
                     except Exception as ex:
                         transcribe_result["error"] = ex
                     finally:
+                        if temp_safe_path and os.path.exists(temp_safe_path):
+                            try:
+                                os.remove(temp_safe_path)
+                            except Exception:
+                                pass
                         transcribe_result["done"] = True
                         stop_anim.set()
 
                 t = threading.Thread(target=run_transcribe, daemon=True)
                 t.start()
 
-                # Anima barra de 20% a 93% enquanto a thread roda
                 current_pct = 20
                 step_size = 1
-                delay = estimated_s / max(1, (93 - 20) / step_size)
-                delay = min(delay, 1.0)  # no máximo 1s por passo
+                delay = estimated_total_s / max(1, (93 - 20) / step_size)
+                delay = min(delay, 1.5)
+
                 while not stop_anim.is_set() and current_pct < 93:
+                    elapsed_s = time.time() - start_time
+                    remaining_s = max(0, int(estimated_total_s - elapsed_s))
+                    detail_msg = f"Est: {format_time_min_sec(estimated_total_s)} | Rest: {format_time_min_sec(remaining_s)}"
                     if progress_callback:
-                        progress_callback(current_pct, "")
+                        progress_callback(current_pct, detail_msg)
                     time.sleep(delay)
                     current_pct = min(current_pct + step_size, 93)
 
-                # Após atingir 93%, progride lentamente até 99% e aguarda (evita sensação de travamento ou regressão)
                 slow_pct = 93
                 while not stop_anim.is_set():
+                    elapsed_s = time.time() - start_time
+                    remaining_s = max(0, int(estimated_total_s - elapsed_s))
+                    detail_msg = f"Est: {format_time_min_sec(estimated_total_s)} | Rest: {format_time_min_sec(remaining_s)}"
                     if progress_callback:
-                        progress_callback(slow_pct, "")
+                        progress_callback(slow_pct, detail_msg)
                     time.sleep(2.0)
                     if slow_pct < 99:
                         slow_pct += 1
 
-                t.join()  # garante que a thread terminou
+                t.join()
 
                 if progress_callback:
-                    progress_callback(100, "")
+                    progress_callback(100, "Transcrição finalizada")
 
                 text = transcribe_result.get("text", "")
                 if text:
-                    # Salva texto bruto para uso no enriquecimento (Estágio 3)
                     data['transcription_text'] = text
                     raw_sentences = [s.strip() for s in text.split('.') if s.strip()]
                     chunk_para = ""
@@ -2733,7 +2888,7 @@ def handle_execution_error(error_msg):
         print("\nAplicação encerrada pelo usuário.\n")
         sys.exit(0)
 
-def process_reports(urls, mode, outdir, transcricao=True):
+def process_reports(urls, mode, outdir, transcricao=True, whisper_model="small"):
     import threading, time
     try:
         print("\n=======================================================================")
@@ -2771,9 +2926,11 @@ def process_reports(urls, mode, outdir, transcricao=True):
 
             # ── Estágio 2: Transcrição via Whisper ───────────────────────────
             if transcricao:
-                # (animação já integrada dentro de generate_transcription_report)
-                transcription_path = generate_transcription_report(audio_path, data, outdir,
-                                                                   progress_callback=lambda pct, d="": render_stage_progress(2, 4, "", pct))
+                transcription_path = generate_transcription_report(
+                    audio_path, data, outdir,
+                    progress_callback=lambda pct, d="": render_stage_progress(2, 4, "", pct, detail=d),
+                    whisper_model=whisper_model
+                )
                 data['transcription_path'] = transcription_path
             else:
                 print("  [Transcrição ignorada conforme opção selecionada]")
